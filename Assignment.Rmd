@@ -1,0 +1,176 @@
+---
+title: 'Practical Machine Learning Assignment'
+author: "Binu Enchakalody"
+date: "April 2, 2016"
+---
+
+## Qualitative Activity Prediction of Weight Lifting Exercises: Prediction Assignment
+
+####Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. 
+
+The approach is to investigate "how (well)" an activity was performed by the wearer. The "how (well)" investigation has only received little attention so far, even though it potentially provides useful information for a large variety of applications,such as sports training.
+
+Six young health participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E).
+
+Class A corresponds to the specified execution of the exercise, while the other 4 classes correspond to common mistakes. Participants were supervised by an experienced weight lifter to make sure the execution complied to the manner they were supposed to simulate. The exercises were performed by six male participants aged between 20-28 years, with little weight lifting experience. We made sure that all participants could easily simulate the mistakes in a safe and controlled manner by using a relatively light dumbbell (1.25kg).
+
+Reference data set and background from http://groupware.les.inf.puc-rio.br/har#literature#ixzz44j9toeZH
+
+```{r,echo = FALSE, message = FALSE}
+options(warn=-1)
+library(ggplot2)
+library(lattice)
+library(AppliedPredictiveModeling)
+library(caret)
+library(rpart)
+library(corrplot)
+library(randomForest)
+library(RCurl)
+library(rattle)
+
+```
+
+## Load the data and split
+
+Start by loading the training and testing data
+
+```{r }
+trainURL<- getURL('https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv');
+testURL<- getURL('https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv');
+
+trainingData<- read.csv(textConnection(trainURL));
+testingData<- read.csv(textConnection(testURL));
+```
+
+## Pre-process the data
+The train data has 160 variables. Lets find the relevant co-variates in this group to train the model. The variables with time-stamps and user-names are not useful. Besides that, remove covariates that have zero or close to a zero variance and the covariates that have more than 50% of their values empty. 
+
+This narrows the list of covariates down to 53. 
+
+```{r, echo = TRUE}
+set.seed(12500) # Set seed value
+
+trainingData$classe = factor(trainingData$classe) # factorize the output variable
+siz = dim(trainingData);
+trainingData<- trainingData[,8:siz[2]];
+
+nsV<- nearZeroVar(trainingData,saveMetrics=TRUE); # Find and remove near zero variance features
+naCols<- colSums (is.na(trainingData), na.rm = FALSE) > 0.5*siz[1]; # find and remove near empty features
+
+# Remove Near Zero covarient and empty columns 
+prcTrainingData<- trainingData[,(!naCols & !nsV$nzv)];
+```
+
+These are the list of elliminated co-variates
+```{r, echo = FALSE}
+colnames(trainingData[nsV$nzv])
+```
+
+The correlation map of the remaining variables shows high correlation between certain covariates. This means there is linearly dependent variables. Using PCA using a threshold can help narrow down a useful set of predictors.
+
+```{r, echo = FALSE, fig.width=23, fig.height=23}
+corrplot(cor(prcTrainingData[,-53]), method = "circle",type = 'upper')
+
+```
+
+#### Using Principal Component Analysis
+Principal component analysis is used to pre-process the covariates with a threshold of 0.8 variance. A final set of 12 PC variables are used to train the model.
+
+The training data is split into a training and validation set in a 75, 25% split. 
+
+```{r}
+
+inTrain<- createDataPartition(y=prcTrainingData$classe, p=0.75,list = FALSE);
+training<- prcTrainingData[inTrain,];
+validation<- prcTrainingData[-inTrain,];
+
+pcaData<- preProcess(training[,-53],method ='pca', thresh =0.8, na.rm = TRUE)
+trainData<- predict(pcaData,training[,-53])
+
+```
+
+### Predicting with trees
+
+The recursive partioning method is trained on this model using a k-fold cross validation(n=5). However the insample error is higher than expected  
+```{r}
+
+# Use the trainSet dataframe as the training data
+# Use cross-validation and r-part
+
+trainRpModel<- train(training$classe ~ .,data = trainData, method = "rpart",
+                   trControl = trainControl(method = "cv",number = 5)); # Use 5 folds for cross-validation
+
+trainRpResults<- predict(trainRpModel,newData = trainData);
+
+```
+
+The final value used for the model was cp = 0.02145638. The accuracy of this model itself is only at 40.5%. This is unsatisfactory. We need to try another model.
+
+```{r, echo = FALSE}
+trainRpModel
+```
+###Dendogram of the r-part model
+
+```{r, echo =FALSE,fig.width=8, fig.height=10}
+fancyRpartPlot(trainRpModel$finalModel);
+
+```
+
+### Using Random Forest 
+Since the R-part did not produce the desired results lets use the Random-forest method using a cross-validation k-fold of n=5
+```{r}
+
+# Use the trainSet dataframe as the training data
+# Use cross-validation
+
+trainModel<- train(training$classe ~ .,data = trainData, 
+                   method = "rf",verbose = 'TRUE',# Use the "random forest" algorithm
+                   trControl = trainControl(method = "cv",number = 5)); # Use 5 folds for cross-validation
+
+trainResults<- predict(trainModel,newData = trainData);
+
+```
+
+The final value used for the model was mtry = 2 and the accuracy significantly improved to 95.46%. Using a fold size of 5 showed a very slight improvement in accuracy over the 10. The training model is used to predict the Class outcomes in the validation set. 
+
+```{r, echo = FALSE}
+trainModel
+```
+
+### In-sample Acccuracy and Error
+The confusion matrix on the training set shows the in sample accuracy is at 99.97% making the in-sample error (1-0.99) ~1%. ALl the classes are accurately predicted.
+
+```{r}
+confusionMatrix(training$classe,trainResults)
+```
+### Out-of-sample ccuracy and Error
+
+The confusion matrix on the validation set shows the accuracy at 95.98% making the Out of Sample error of(1-0.95) at ~5%. The overall senstivity for all 5 classes is over 90% and sensitivity is over 97%. 
+
+```{r}
+validationData<- predict(pcaData,validation[,-53]);
+validationResults<- predict(trainModel,validationData);
+confusionMatrix(validation$classe,validationResults)
+```
+
+## Test Set
+Apply the PCA pre process model on the test set after removing the zero variance and empty variables. Predict the outcome of the training on 20 test cases.
+
+```{r}
+
+testingData<- testingData[,8:siz[2]]
+testingData<- testingData[,(!naCols & !nsV$nzv)]
+
+testPCA<- predict(pcaData,testingData[,-53]);
+finalRes<- predict(trainModel,testPCA)
+#confusionMatrix(finData$pro,)
+```
+
+20 Test Set predictions using a PCA pre-processing, 5 fold cross-validation method and a Random forest classifier model.
+
+```{r}
+finalRes
+
+```
